@@ -88,12 +88,28 @@ jobs:
           bundler-cache: true
           working-directory: ios
 
+      # Until the repo variable IOS_DISTRIBUTION_ENABLED is 'true' (needs an Apple Developer account),
+      # build an IPA signed with a throwaway certificate and keep it as a workflow artifact.
+      - name: Build dummy-signed IPA
+        if: vars.IOS_DISTRIBUTION_ENABLED != 'true'
+        run: bundle exec fastlane ios dummy_sign
+
+      - name: Upload dummy-signed IPA
+        if: vars.IOS_DISTRIBUTION_ENABLED != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-dummy-signed-ipa
+          path: build/ios/ipa/Runner.ipa
+          retention-days: 7
+
       - name: Write Firebase service account
+        if: vars.IOS_DISTRIBUTION_ENABLED == 'true'
         env:
           FIREBASE_SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
         run: echo "$FIREBASE_SA" > "$RUNNER_TEMP/firebase-sa.json"
 
       - name: Build and upload
+        if: vars.IOS_DISTRIBUTION_ENABLED == 'true'
         env:
           FIREBASE_IOS_APP_ID: ${{ secrets.FIREBASE_IOS_APP_ID }}
           FIREBASE_SERVICE_ACCOUNT_FILE: ${{ runner.temp }}/firebase-sa.json

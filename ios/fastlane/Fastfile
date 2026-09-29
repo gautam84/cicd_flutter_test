@@ -23,6 +23,69 @@ platform :ios do
     match(type: "adhoc", api_key: asc_api_key, force_for_new_devices: true)
   end
 
+  # The IPA has no provisioning profile, so it cannot be installed or uploaded to Firebase.
+  desc "No Apple account yet: build an IPA signed with a throwaway self-signed certificate"
+  lane :dummy_sign do
+    require "securerandom"
+    require "shellwords"
+
+    # Ruby code runs inside ios/fastlane, so ../.. is the Flutter project root.
+    root = File.expand_path("../..")
+    work = File.join(root, "build/ios/dummy_sign")
+    keychain = File.join(work, "dummy.keychain-db")
+    app = File.join(root, "build/ios/iphoneos/Runner.app")
+    ipa_dir = File.join(root, "build/ios/ipa")
+    password = SecureRandom.hex(16)
+    q = ->(s) { Shellwords.escape(s) }
+
+    sh("rm -rf #{q[work]} && mkdir -p #{q[work]}")
+
+    # 1. Self-signed code-signing certificate. /usr/bin/openssl (LibreSSL) writes a .p12 macOS can import.
+    File.write(File.join(work, "cert.cnf"), <<~CNF)
+      [req]
+      distinguished_name = dn
+      x509_extensions = ext
+      prompt = no
+      [dn]
+      CN = Dummy iOS Signing
+      [ext]
+      basicConstraints = critical, CA:false
+      keyUsage = critical, digitalSignature
+      extendedKeyUsage = critical, codeSigning
+    CNF
+    sh("cd #{q[work]} && /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 30 " \
+       "-config cert.cnf -keyout key.pem -out cert.pem")
+    sh("cd #{q[work]} && /usr/bin/openssl pkcs12 -export -inkey key.pem -in cert.pem " \
+       "-out cert.p12 -passout pass:#{password}")
+    identity = sh("/usr/bin/openssl x509 -in #{q[work]}/cert.pem -noout -fingerprint -sha1", log: false)
+               .split("=").last.delete(":").strip
+
+    # 2. Temporary keychain holding only the dummy identity.
+    sh("security create-keychain -p #{password} #{q[keychain]}")
+    begin
+      sh("security set-keychain-settings #{q[keychain]}")
+      sh("security unlock-keychain -p #{password} #{q[keychain]}")
+      sh("security import #{q[work]}/cert.p12 -k #{q[keychain]} -P #{password} -T /usr/bin/codesign")
+      sh("security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k #{password} #{q[keychain]} > /dev/null")
+
+      # 3. Unsigned build.
+      sh("cd #{q[root]} && flutter build ios --release --no-codesign --build-number=#{ENV.fetch('BUILD_NUMBER', '1')}")
+
+      # 4. Sign inside-out: embedded frameworks first, then the app.
+      sign = "codesign --force --timestamp=none --keychain #{q[keychain]} --sign #{identity}"
+      Dir.glob(File.join(app, "Frameworks", "*.{framework,dylib}")).each { |f| sh("#{sign} #{q[f]}") }
+      sh("#{sign} #{q[app]}")
+      sh("codesign --verify --deep --strict --verbose=2 #{q[app]}")
+    ensure
+      sh("security delete-keychain #{q[keychain]}")
+    end
+
+    # 5. Package as an IPA.
+    sh("mkdir -p #{q[work]}/Payload #{q[ipa_dir]} && cp -R #{q[app]} #{q[work]}/Payload/")
+    sh("cd #{q[work]} && rm -f #{q[ipa_dir]}/Runner.ipa && zip -qry #{q[ipa_dir]}/Runner.ipa Payload")
+    UI.success("Dummy-signed IPA: #{ipa_dir}/Runner.ipa")
+  end
+
   desc "Build an ad-hoc IPA and upload it to Firebase App Distribution"
   lane :distribute do
     setup_ci if ENV["CI"]
