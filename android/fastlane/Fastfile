@@ -1,9 +1,18 @@
 default_platform(:android)
 
 platform :android do
-  desc "Build a signed release APK and upload it to Firebase App Distribution"
-  lane :distribute do
+  desc "Lint and run unit tests"
+  lane :checks do
     # `sh` runs inside android/fastlane, so ../.. is the Flutter project root.
+    sh("cd ../.. && flutter pub get")
+    sh("cd ../.. && flutter analyze")
+    sh("cd ../.. && flutter test")
+  end
+
+  desc "Lint, test, build a signed release APK and upload it to Firebase App Distribution"
+  lane :distribute do
+    checks
+
     sh("cd ../.. && flutter build apk --release --build-number=#{ENV.fetch('BUILD_NUMBER', '1')}")
 
     firebase_app_distribution(
