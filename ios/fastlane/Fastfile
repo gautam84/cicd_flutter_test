@@ -1,0 +1,61 @@
+default_platform(:ios)
+
+BUNDLE_ID = "com.example.cicdFlutterTest"
+
+platform :ios do
+  def asc_api_key
+    app_store_connect_api_key(
+      key_id: ENV.fetch("ASC_KEY_ID"),
+      issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+      key_content: ENV.fetch("ASC_KEY_P8_BASE64"),
+      is_key_content_base64: true
+    )
+  end
+
+  desc "Run once locally: create the ad-hoc certificate and profile and store them in the match repo"
+  lane :certificates do
+    match(type: "adhoc", api_key: asc_api_key, readonly: false)
+  end
+
+  desc "Register a tester device, then refresh the ad-hoc profile to include it"
+  lane :add_device do |options|
+    register_devices(devices: { options[:name] => options[:udid] }, api_key: asc_api_key)
+    match(type: "adhoc", api_key: asc_api_key, force_for_new_devices: true)
+  end
+
+  desc "Build an ad-hoc IPA and upload it to Firebase App Distribution"
+  lane :distribute do
+    setup_ci if ENV["CI"]
+    match(type: "adhoc", api_key: asc_api_key, readonly: true)
+
+    profile = ENV["sigh_#{BUNDLE_ID}_adhoc_profile-name"]
+    update_code_signing_settings(
+      path: "Runner.xcodeproj",
+      use_automatic_signing: false,
+      targets: ["Runner"],
+      team_id: "XV6K8UQZCJ",
+      code_sign_identity: "Apple Distribution",
+      profile_name: profile
+    )
+
+    # Compile Flutter code and run pod install; signing is done by gym below.
+    sh("cd ../.. && flutter build ios --release --no-codesign --build-number=#{ENV.fetch('BUILD_NUMBER', '1')}")
+
+    build_app(
+      workspace: "Runner.xcworkspace",
+      scheme: "Runner",
+      export_method: "ad-hoc",
+      export_options: { provisioningProfiles: { BUNDLE_ID => profile } },
+      output_directory: "../build/ios/ipa",
+      output_name: "Runner.ipa"
+    )
+
+    firebase_app_distribution(
+      app: ENV.fetch("FIREBASE_IOS_APP_ID"),
+      service_credentials_file: ENV.fetch("FIREBASE_SERVICE_ACCOUNT_FILE"),
+      ipa_path: "../build/ios/ipa/Runner.ipa",
+      groups: ENV["FIREBASE_TESTER_GROUPS"],
+      release_notes: ENV.fetch("RELEASE_NOTES", "")
+    )
+  end
+end

@@ -1,0 +1,18 @@
+default_platform(:android)
+
+platform :android do
+  desc "Build a signed release APK and upload it to Firebase App Distribution"
+  lane :distribute do
+    # `sh` runs inside android/fastlane, so ../.. is the Flutter project root.
+    sh("cd ../.. && flutter build apk --release --build-number=#{ENV.fetch('BUILD_NUMBER', '1')}")
+
+    firebase_app_distribution(
+      app: ENV.fetch("FIREBASE_ANDROID_APP_ID"),
+      service_credentials_file: ENV.fetch("FIREBASE_SERVICE_ACCOUNT_FILE"),
+      android_artifact_type: "APK",
+      android_artifact_path: "../build/app/outputs/flutter-apk/app-release.apk",
+      groups: ENV["FIREBASE_TESTER_GROUPS"],
+      release_notes: ENV.fetch("RELEASE_NOTES", "")
+    )
+  end
+end
