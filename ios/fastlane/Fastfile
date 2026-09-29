@@ -61,12 +61,20 @@ platform :ios do
                .split("=").last.delete(":").strip
 
     # 2. Temporary keychain holding only the dummy identity.
+    original_keychains = sh("security list-keychains -d user", log: false).split.map { |k| k.delete('"') }
     sh("security create-keychain -p #{password} #{q[keychain]}")
     begin
       sh("security set-keychain-settings #{q[keychain]}")
       sh("security unlock-keychain -p #{password} #{q[keychain]}")
       sh("security import #{q[work]}/cert.p12 -k #{q[keychain]} -P #{password} -T /usr/bin/codesign")
       sh("security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k #{password} #{q[keychain]} > /dev/null")
+      # codesign only resolves identities from keychains on the search list.
+      sh("security list-keychains -d user -s #{([keychain] + original_keychains).map { |k| q[k] }.join(' ')}")
+      # CI runners refuse untrusted identities; trusting needs admin (passwordless sudo on GitHub runners).
+      if ENV["CI"]
+        sh("sudo security add-trusted-cert -d -r trustRoot -p codeSign -k #{q[keychain]} #{q[work]}/cert.pem")
+      end
+      sh("security find-identity -p codesigning #{q[keychain]}")
 
       # 3. Unsigned build.
       sh("cd #{q[root]} && flutter build ios --release --no-codesign --build-number=#{ENV.fetch('BUILD_NUMBER', '1')}")
@@ -77,6 +85,7 @@ platform :ios do
       sh("#{sign} #{q[app]}")
       sh("codesign --verify --deep --strict --verbose=2 #{q[app]}")
     ensure
+      sh("security list-keychains -d user -s #{original_keychains.map { |k| q[k] }.join(' ')}")
       sh("security delete-keychain #{q[keychain]}")
     end
 
