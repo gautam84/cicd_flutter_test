@@ -1,0 +1,23 @@
+# Flow B: a PR from test merged into release -> log a message.
+name: Release log (test -> release)
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [release]
+
+jobs:
+  log:
+    if: github.event.pull_request.merged == true && github.event.pull_request.head.ref == 'test'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log release merge
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          MERGED_BY: ${{ github.event.pull_request.merged_by.login }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          echo "Release merged: PR #$PR_NUMBER \"$PR_TITLE\""
+          echo "Merged by: $MERGED_BY"
+          echo "Commit: $MERGE_SHA"

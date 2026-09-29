@@ -1,0 +1,122 @@
+# Flow A: a PR from develop merged into test -> build Android + iOS and upload to Firebase App Distribution.
+name: Distribute to Firebase (develop -> test)
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [test]
+
+concurrency:
+  group: distribute-test
+  cancel-in-progress: true
+
+env:
+  BUILD_NUMBER: ${{ github.run_number }}
+  RELEASE_NOTES: "${{ github.event.pull_request.title }} (PR #${{ github.event.pull_request.number }})"
+  FIREBASE_TESTER_GROUPS: ${{ vars.FIREBASE_TESTER_GROUPS }}
+
+jobs:
+  # Lint and tests run inside the Fastlane `distribute` lane (see android/fastlane/Fastfile).
+  android:
+    if: github.event.pull_request.merged == true && github.event.pull_request.head.ref == 'develop'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: android
+
+      - name: Write keystore and key.properties
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/upload-keystore.jks"
+          {
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyPassword=$KEY_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "storeFile=$RUNNER_TEMP/upload-keystore.jks"
+          } > key.properties
+
+      - name: Write Firebase service account
+        env:
+          FIREBASE_SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+        run: echo "$FIREBASE_SA" > "$RUNNER_TEMP/firebase-sa.json"
+
+      - name: Build and upload
+        env:
+          FIREBASE_ANDROID_APP_ID: ${{ secrets.FIREBASE_ANDROID_APP_ID }}
+          FIREBASE_SERVICE_ACCOUNT_FILE: ${{ runner.temp }}/firebase-sa.json
+        run: bundle exec fastlane android distribute
+
+  ios:
+    # Waits for android so iOS only ships code that passed lint and tests.
+    needs: android
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: ios
+
+      # Until the repo variable IOS_DISTRIBUTION_ENABLED is 'true' (needs an Apple Developer account),
+      # build an IPA signed with a throwaway certificate and keep it as a workflow artifact.
+      - name: Build dummy-signed IPA
+        if: vars.IOS_DISTRIBUTION_ENABLED != 'true'
+        run: bundle exec fastlane ios dummy_sign
+
+      - name: Upload dummy-signed IPA
+        if: vars.IOS_DISTRIBUTION_ENABLED != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-dummy-signed-ipa
+          path: build/ios/ipa/Runner.ipa
+          retention-days: 7
+
+      - name: Write Firebase service account
+        if: vars.IOS_DISTRIBUTION_ENABLED == 'true'
+        env:
+          FIREBASE_SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+        run: echo "$FIREBASE_SA" > "$RUNNER_TEMP/firebase-sa.json"
+
+      - name: Build and upload
+        if: vars.IOS_DISTRIBUTION_ENABLED == 'true'
+        env:
+          FIREBASE_IOS_APP_ID: ${{ secrets.FIREBASE_IOS_APP_ID }}
+          FIREBASE_SERVICE_ACCOUNT_FILE: ${{ runner.temp }}/firebase-sa.json
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+          MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
+        run: bundle exec fastlane ios distribute
